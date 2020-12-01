@@ -2,8 +2,10 @@ package com.github.fit51.reactiveconfig.etcd
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import java.time.Clock
 
 import com.coreos.jetcd.resolver.URIResolverLoader
+import com.github.fit51.reactiveconfig.etcd.gen.rpc.{AuthGrpc, AuthenticateRequest, AuthenticateResponse}
 import com.typesafe.scalalogging.StrictLogging
 import io.grpc.ForwardingClientCall.SimpleForwardingClientCall
 import io.grpc.ForwardingClientCallListener.SimpleForwardingClientCallListener
@@ -14,6 +16,7 @@ import io.netty.handler.ssl.ClientAuth
 import javax.net.ssl.TrustManagerFactory
 import com.github.fit51.reactiveconfig.etcd.gen.rpc.{AuthGrpc, AuthenticateRequest, AuthenticateResponse}
 import io.netty.channel.ChannelOption
+import pdi.jwt.{Jwt, JwtOptions}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
@@ -40,10 +43,11 @@ object ChannelManager {
       options: ChannelOptions = ChannelOptions(),
       authority: Option[String] = None,
       trustManagerFactory: Option[TrustManagerFactory] = None
-  )(implicit exec: ExecutionContext): ChannelManager with Authorization = {
+  )(implicit exec: ExecutionContext, cl: Clock): ChannelManager with Authorization = {
     val uris = endpoints.split(',').map(new URI(_)).toList
-    new ChannelManager(uris, options, authority, trustManagerFactory) with Authorization {
-      override val credentials = credential
+    new ChannelManager(uris, authority, trustManagerFactory) with Authorization {
+      override val credentials    = credential
+      override implicit val clock = cl
     }
   }
 }
@@ -103,13 +107,15 @@ trait Authorization extends ChannelManager {
 
   val credentials: Credentials
 
+  implicit val clock: Clock
+
   override protected[etcd] def channelBuilder =
     super.channelBuilder
       .intercept(new AuthTokenInterceptor)
 
-  @volatile private var token: Option[String] = None
-  private lazy val api                        = AuthGrpc.blockingStub(channel)
-  private lazy val apiAsync                   = AuthGrpc.stub(channel)
+  @volatile private var token: Option[Token] = None
+  private lazy val api                       = AuthGrpc.blockingStub(channel)
+  private lazy val apiAsync                  = AuthGrpc.stub(channel)
 
   def authenticate: Option[String] = {
     extractToken(Try {
@@ -129,10 +135,17 @@ trait Authorization extends ChannelManager {
 
   private def extractToken(resp: Try[AuthenticateResponse]) = resp match {
     case Success(r) =>
-      val t = r.token
-      logger.info(s"ETCD: Got token $t")
+      val tokenStr = r.token
+      val t = Jwt.decode(tokenStr, JwtOptions(signature = false)) match {
+        case Success(claim) =>
+          logger.info("ETCD: Got jwt token")
+          JwtToken(tokenStr, claim)
+        case _ =>
+          logger.info("ETCD: Got simple token")
+          SimpleToken(tokenStr)
+      }
       token = Some(t)
-      Success(t)
+      Success(tokenStr)
     case Failure(e) =>
       logger.error(s"ETCD: Error authenticating", e)
       Failure(e)
@@ -156,8 +169,13 @@ trait Authorization extends ChannelManager {
       new SimpleForwardingClientCall[ReqT, RespT](next.newCall(method, callOptions)) {
 
         override def start(responseListener: ClientCall.Listener[RespT], headers: Metadata): Unit = {
-          if (method.getFullMethodName != authMethod)
-            token.orElse(authenticate).map(t => headers.put(TOKEN, t))
+          if (method.getFullMethodName != authMethod) {
+            (token match {
+              case Some(SimpleToken(value))                      => Some(value)
+              case Some(JwtToken(value, claim)) if claim.isValid => Some(value)
+              case _                                             => authenticate
+            }).foreach(headers.put(TOKEN, _))
+          }
           super.start(
             new SimpleForwardingClientCallListener[RespT](responseListener) {
               override def onClose(status: Status, trailers: Metadata) = {

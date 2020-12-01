@@ -1,5 +1,6 @@
 package com.github.fit51.reactiveconfig.etcd
 
+import java.time.Clock
 import java.util.concurrent.TimeUnit
 
 import cats.effect.{Async, ContextShift}
