@@ -82,7 +82,7 @@ class ChannelManager(
       .withOption[Integer](ChannelOption.CONNECT_TIMEOUT_MILLIS, options.connectTimeout.toMillis.toInt)
 
     if (authority.isDefined)
-      builder.sslContext(getSslContext)
+      builder.sslContext(getSslContext())
     else
       builder.usePlaintext()
   }
