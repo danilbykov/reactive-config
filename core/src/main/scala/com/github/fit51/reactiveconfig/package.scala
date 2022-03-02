@@ -2,13 +2,21 @@ package com.github.fit51
 
 package object reactiveconfig {
 
+  final case class Sensitive(value: String) {
+    override def toString = value
+  }
+
   /** Pre-parsed data,
     */
   type Parsed
 
   /** Value stored in internal key->value Map
     */
-  case class Value[ParsedData](parsedData: ParsedData, version: Long)
+  case class Value[ParsedData](parsedData: ParsedData, version: Long) {
+
+    def isUpdated(newValue: Value[ParsedData]): Boolean =
+      parsedData != newValue.parsedData && version < newValue.version
+  }
 
   /** Represents successfully parsed KeyValue
     */
@@ -17,12 +25,21 @@ package object reactiveconfig {
   /** Common reactive config exception
     */
   object ReactiveConfigException {
-    def apply(key: String, message: String): ReactiveConfigException =
-      new ReactiveConfigException(s"$message on key: $key")
 
-    def apply(message: String): ReactiveConfigException =
-      new ReactiveConfigException(message)
+    def unknownKey(key: String): ReactiveConfigException =
+      new UnknownKey(key)
+
+    def unableToParse(key: String, cause: Throwable): ReactiveConfigException =
+      new UnableToParse(key, cause.getMessage(), cause)
   }
 
-  class ReactiveConfigException(message: String) extends Exception(message)
+  sealed abstract class ReactiveConfigException(
+      message: String,
+      cause: Throwable
+  ) extends Exception(message, cause)
+
+  class UnknownKey(val key: String) extends ReactiveConfigException(s"Unknown key $key", null)
+
+  class UnableToParse(val key: String, message: String, cause: Throwable)
+      extends ReactiveConfigException(message, cause)
 }
