@@ -13,33 +13,35 @@ import com.github.fit51.reactiveconfig.zio.reloadable.Reloadable._
 import zio._
 import zio.nio.file.{Path => ZPath, WatchService}
 
-class TypesafeReactiveConfig[D](stateRef: RefM[ConfigState[UIO, D]]) extends AbstractReactiveConfig[D](stateRef)
+class TypesafeReactiveConfig[D](stateRef: Ref.Synchronized[ConfigState[UIO, D]])
+    extends AbstractReactiveConfig[D](stateRef)
 
 object TypesafeReactiveConfig {
 
   private val uioEffect: Effect[UIO] = Effect[UIO]
 
-  def live[D: Tag](path: Path)(implicit encoder: ConfigParser[D]) = (for {
-    watchService <- WatchService.forDefaultFileSystem
-    zpath = ZPath(path.getParent().toUri())
-    _        <- zpath.register(watchService, List(StandardWatchEventKinds.ENTRY_MODIFY)).toManaged(_.cancel)
-    stateRef <- parseConfig(path, -1).toManaged_.map(ConfigState[UIO, D](_, Map.empty)) >>= ZRefM.makeManaged
-    _ <- watchService.stream
-      .mapChunksM(ZIO.foreach(_)(_.reset).as(Chunk.unit))
-      .zipWithIndex
-      .mapM { case (_, idx) => parseConfig(path, idx).either }
-      .foreach {
-        case Right(newMap) =>
-          stateRef.update { state =>
-            state.fireUpdates(newMap).as(state.copy(values = newMap))
-          }
-        case Left(e) =>
-          uioEffect.warn("Unable to parse config", e)
-      }
-      .fork
-      .toManaged_
-  } yield new TypesafeReactiveConfig(stateRef)).toLayer
+  def live[D: Tag](path: Path)(implicit encoder: ConfigParser[D]) = ZLayer.scoped(
+    for {
+      watchService <- WatchService.forDefaultFileSystem
+      zpath = ZPath(path.getParent().toUri())
+      _        <- ZIO.acquireRelease(zpath.register(watchService, List(StandardWatchEventKinds.ENTRY_MODIFY)))(_.cancel)
+      stateRef <- parseConfig(path, -1).map(ConfigState[UIO, D](_, Map.empty)).flatMap(Ref.Synchronized.make(_))
+      _ <- watchService.stream
+        .mapChunksZIO(ZIO.foreach(_)(_.reset).as(Chunk.unit))
+        .zipWithIndex
+        .mapZIO { case (_, idx) => parseConfig(path, idx).either }
+        .foreach {
+          case Right(newMap) =>
+            stateRef.updateZIO { state =>
+              state.fireUpdates(newMap).as(state.copy(values = newMap))
+            }
+          case Left(e) =>
+            uioEffect.warn("Unable to parse config", e)
+        }
+        .fork
+    } yield new TypesafeReactiveConfig(stateRef)
+  )
 
   private def parseConfig[D: ConfigParser](path: Path, index: Long): Task[Map[String, Value[D]]] =
-    Task.effect(TypesafeUtils.parseConfig(path)).flatMap(TypesafeUtils.parseValuesInMap[UIO, D](_, index))
+    ZIO.attempt(TypesafeUtils.parseConfig(path)).flatMap(TypesafeUtils.parseValuesInMap[UIO, D](_, index))
 }

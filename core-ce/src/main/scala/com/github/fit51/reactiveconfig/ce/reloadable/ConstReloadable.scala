@@ -5,7 +5,6 @@ import cats.effect.{Resource => CatsResource}
 import cats.kernel.Eq
 import cats.syntax.flatMap._
 import cats.syntax.functor._
-import com.github.fit51.reactiveconfig.ce.reloadable.Reloadable._
 import com.github.fit51.reactiveconfig.reloadable._
 import com.github.fit51.reactiveconfig.typeclasses._
 
