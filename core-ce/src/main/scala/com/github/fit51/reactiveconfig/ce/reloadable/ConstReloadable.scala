@@ -1,6 +1,6 @@
 package com.github.fit51.reactiveconfig.ce.reloadable
 
-import cats.{~>, Monad}
+import cats.{~>, Applicative, Monad}
 import cats.effect.{Resource => CatsResource}
 import cats.kernel.Eq
 import cats.syntax.flatMap._
@@ -54,6 +54,8 @@ private class ConstReloadable[F[_]: Monad, A](a: A) extends Reloadable[F, A] { s
 
   override protected[reactiveconfig] def subscribe[G[_]](
       subscriber: Subscriber[F, A]
-  )(implicit effect: Effect[G], resource: Resource[CatsResource, G]): CatsResource[G, Unit] =
+  )(implicit effect: Effect[G], resource: Resource[CatsResource, G]): CatsResource[G, Unit] = {
+    implicit val app: Applicative[G] = Reloadable.applicativeForEffect[G]
     CatsResource.pure[G, Unit](())
+  }
 }
